@@ -1,0 +1,101 @@
+name: Linux 3.0 modified object build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "block/**"
+      - "ipc/**"
+      - "include/linux/l30_checked_math.h"
+      - "windows_verify/**"
+      - ".github/workflows/linux30-object-build.yml"
+
+jobs:
+  portable-tests:
+    name: Portable arithmetic and source tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run native Windows verification
+        shell: powershell
+        run: .\windows_verify\verify-native.ps1
+
+  kernel-objects:
+    name: Build changed Linux 3.0 objects
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    steps:
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git curl xz-utils build-essential gcc-9 \
+            bc bison flex libelf-dev
+
+      - uses: actions/checkout@v4
+
+      - name: Download official Linux 3.0 source
+        run: |
+          curl --fail --location --retry 3 \
+            https://cdn.kernel.org/pub/linux/kernel/v3.0/linux-3.0.tar.xz \
+            --output linux-3.0.tar.xz
+          tar -xf linux-3.0.tar.xz
+
+      - name: Overlay modified sources
+        run: |
+          cp block/blk-tag.c linux-3.0/block/blk-tag.c
+          cp block/blk-sysfs.c linux-3.0/block/blk-sysfs.c
+          cp ipc/mqueue.c linux-3.0/ipc/mqueue.c
+          cp ipc/sem.c linux-3.0/ipc/sem.c
+          cp ipc/util.c linux-3.0/ipc/util.c
+          cp ipc/util.h linux-3.0/ipc/util.h
+          cp include/linux/l30_checked_math.h \
+             linux-3.0/include/linux/l30_checked_math.h
+
+      - name: Prepare Linux 3.0 build tree
+        working-directory: linux-3.0
+        run: |
+          make mrproper
+          make CC=gcc-9 HOSTCC=gcc-9 defconfig
+          make -j2 CC=gcc-9 HOSTCC=gcc-9 \
+            KCFLAGS="-fcommon -fno-pie" \
+            HOSTCFLAGS="-fcommon -fno-pie" HOSTLDFLAGS="-no-pie" \
+            prepare scripts
+
+      - name: Build changed kernel objects
+        working-directory: linux-3.0
+        run: |
+          make -j2 V=1 CC=gcc-9 HOSTCC=gcc-9 \
+            KCFLAGS="-fcommon -fno-pie" \
+            HOSTCFLAGS="-fcommon -fno-pie" HOSTLDFLAGS="-no-pie" \
+            block/blk-tag.o \
+            block/blk-sysfs.o \
+            ipc/mqueue.o \
+            ipc/sem.o \
+            ipc/util.o 2>&1 | tee ../changed-objects-build.log
+
+      - name: Assemble proof artifact
+        run: |
+          mkdir -p proof
+          cp linux-3.0/block/blk-tag.o proof/
+          cp linux-3.0/block/blk-sysfs.o proof/
+          cp linux-3.0/ipc/mqueue.o proof/
+          cp linux-3.0/ipc/sem.o proof/
+          cp linux-3.0/ipc/util.o proof/
+          cp changed-objects-build.log proof/
+          sha256sum proof/*.o > proof/SHA256SUMS.txt
+          test -s proof/blk-tag.o
+          test -s proof/blk-sysfs.o
+          test -s proof/mqueue.o
+          test -s proof/sem.o
+          test -s proof/util.o
+          cat proof/SHA256SUMS.txt
+
+      - name: Upload compiled proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-3.0-modified-objects
+          path: proof/
+          if-no-files-found: error
