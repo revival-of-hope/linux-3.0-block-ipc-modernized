@@ -60,17 +60,19 @@ jobs:
         run: |
           make mrproper
           make CC=gcc-9 HOSTCC=gcc-9 defconfig
+          # Linux 3.0 的 scripts/Makefile.host 对 fixdep 这类单文件宿主程序
+          # 不会可靠使用 HOSTLDFLAGS。只传 -fno-pie 会形成“非 PIE 目标代码
+          # + PIE 链接”的冲突。因此宿主工具保持发行版默认 PIE，仅限制内核对象。
           make -j2 CC=gcc-9 HOSTCC=gcc-9 \
             KCFLAGS="-fcommon -fno-pie" \
-            HOSTCFLAGS="-fcommon -fno-pie" HOSTLDFLAGS="-no-pie" \
             prepare scripts
 
       - name: Build changed kernel objects
         working-directory: linux-3.0
         run: |
+          set -o pipefail
           make -j2 V=1 CC=gcc-9 HOSTCC=gcc-9 \
             KCFLAGS="-fcommon -fno-pie" \
-            HOSTCFLAGS="-fcommon -fno-pie" HOSTLDFLAGS="-no-pie" \
             block/blk-tag.o \
             block/blk-sysfs.o \
             ipc/mqueue.o \
