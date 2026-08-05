@@ -3,13 +3,14 @@ name: Linux 3.0 modified object build
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - "block/**"
       - "ipc/**"
       - "include/linux/l30_checked_math.h"
       - "windows_verify/**"
       - ".github/workflows/linux30-object-build.yml"
-
 jobs:
   portable-tests:
     name: Portable arithmetic and source tests
