@@ -1,7 +1,7 @@
-a412aeddd0868db5fdbb6d8b46856a198f911e7a22f377cea6d465978e67473c  ./.github/workflows/linux30-object-build.yml
-399554fcacc0ddc7a540e961c217addcb9607ab37d987277768c591337009dd4  ./MODERNIZATION_REPORT.md
-0652d390ac8aabb7077216869930e9406394e77c37dab044ceac66f782b33f6c  ./README_CN.md
-fdc6c2ba05cf5f131e5fa54bb6d60b87e3fc08ce70623a0642e688ecde890e50  ./VERIFICATION_STATUS.md
+ef13ea11737070415c8f2f68df34fced15e3038251323ccf4a6b017c474fb84f  ./.github/workflows/linux30-object-build.yml
+04dd9fb89be24f59f9b117cd93a0e3c1b356f593937f79e51c786e52042973ca  ./MODERNIZATION_REPORT.md
+30eb95abe72e3be0d44aede36c6cafdd6ab6017ef8a5f59ae567769c648f1ee3  ./README_CN.md
+dc712b80ff7d1e80abfc063fcd93c7801a5d54b7586ae7a4db0cf3565f57770f  ./VERIFICATION_STATUS.md
 be1bef681f23b87928f10c0b6a5658746375a70bbfd064ab111d032292125947  ./block/Kconfig
 bff8341e29b2700c6588624ee1f925abffc32f9cee7bb1b2f51cbbeab7bdf9cd  ./block/Kconfig.iosched
 59f798e80d17ad846c0e4afaa0b8c15b3b5beb0d7d6091a2f0961d03dce118ae  ./block/Makefile
@@ -33,6 +33,7 @@ e973c98fb142eaf88d9aed2904dbd3fe804a3d0b51cf9d047ee0975b40062f1d  ./block/bsg.c
 9ca352588b064a9012eb07270b3363eff0f7dd6cd4f616238ef61165c38d7b82  ./block/ioctl.c
 a26b2371d6f7994f251f43fa821f9931e8668de5a7c47e5812713bae5eacb87d  ./block/noop-iosched.c
 0dd694b01e1f15123d7519d63b9ee9ee057427b976078c6107cd943cac49f481  ./block/scsi_ioctl.c
+4a16c12ded22ff09d79435c3474b4ce8d68f05789e0f9c12c1d8956af8e19861  ./ci/build-linux30-gcc48.sh
 9b2b917cdc159d3123385505bf3b754c8ded15f747227bbf8a1fef0d446f5a17  ./include/linux/l30_checked_math.h
 58d71c59e06deec011695149b74b704cffb6de05024d53075362d3aca244c658  ./ipc/Makefile
 8311c5ae631b72c5070c24f9e2e46e6c6718d06a7eb22a24b97fce06f5a98fb3  ./ipc/compat.c

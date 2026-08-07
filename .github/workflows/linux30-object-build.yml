@@ -10,7 +10,9 @@ on:
       - "ipc/**"
       - "include/linux/l30_checked_math.h"
       - "windows_verify/**"
+      - "ci/**"
       - ".github/workflows/linux30-object-build.yml"
+
 jobs:
   portable-tests:
     name: Portable arithmetic and source tests
@@ -22,30 +24,24 @@ jobs:
         run: .\windows_verify\verify-native.ps1
 
   kernel-objects:
-    name: Build changed Linux 3.0 objects
+    name: Build changed Linux 3.0 objects with GCC 4.8
     runs-on: ubuntu-latest
-    container: ubuntu:20.04
     steps:
-      - name: Install build dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates git curl xz-utils build-essential gcc-9 \
-            bc bison flex libelf-dev
-
       - uses: actions/checkout@v4
 
       - name: Download official Linux 3.0 source
+        shell: bash
         run: |
+          set -euxo pipefail
           curl --fail --location --retry 3 \
             https://cdn.kernel.org/pub/linux/kernel/v3.0/linux-3.0.tar.xz \
             --output linux-3.0.tar.xz
           tar -xf linux-3.0.tar.xz
 
       - name: Overlay modified sources
+        shell: bash
         run: |
+          set -euxo pipefail
           cp block/blk-tag.c linux-3.0/block/blk-tag.c
           cp block/blk-sysfs.c linux-3.0/block/blk-sysfs.c
           cp ipc/mqueue.c linux-3.0/ipc/mqueue.c
@@ -55,32 +51,25 @@ jobs:
           cp include/linux/l30_checked_math.h \
              linux-3.0/include/linux/l30_checked_math.h
 
-      - name: Prepare Linux 3.0 build tree
-        working-directory: linux-3.0
+      # Linux 3.0 selects include/linux/compiler-gcc${__GNUC__}.h.
+      # Keep the proof build on the GCC 4.x generation instead of porting the
+      # entire 2011 kernel compiler layer merely to compile these five objects.
+      # A step-level Docker container is used so actions/checkout@v4 can still
+      # run on the modern GitHub runner.
+      - name: Build changed objects in Ubuntu 14.04 / GCC 4.8
+        shell: bash
         run: |
-          make mrproper
-          make CC=gcc-9 HOSTCC=gcc-9 defconfig
-          # Linux 3.0 的 scripts/Makefile.host 对 fixdep 这类单文件宿主程序
-          # 不会可靠使用 HOSTLDFLAGS。只传 -fno-pie 会形成“非 PIE 目标代码
-          # + PIE 链接”的冲突。因此宿主工具保持发行版默认 PIE，仅限制内核对象。
-          make -j2 CC=gcc-9 HOSTCC=gcc-9 \
-            KCFLAGS="-fcommon -fno-pie" \
-            prepare scripts
-
-      - name: Build changed kernel objects
-        working-directory: linux-3.0
-        run: |
-          set -o pipefail
-          make -j2 V=1 CC=gcc-9 HOSTCC=gcc-9 \
-            KCFLAGS="-fcommon -fno-pie" \
-            block/blk-tag.o \
-            block/blk-sysfs.o \
-            ipc/mqueue.o \
-            ipc/sem.o \
-            ipc/util.o 2>&1 | tee ../changed-objects-build.log
+          set -euxo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            ubuntu:14.04 \
+            bash /work/ci/build-linux30-gcc48.sh
 
       - name: Assemble proof artifact
+        shell: bash
         run: |
+          set -euxo pipefail
           mkdir -p proof
           cp linux-3.0/block/blk-tag.o proof/
           cp linux-3.0/block/blk-sysfs.o proof/
@@ -99,6 +88,6 @@ jobs:
       - name: Upload compiled proof
         uses: actions/upload-artifact@v4
         with:
-          name: linux-3.0-modified-objects
+          name: linux-3.0-modified-objects-gcc48
           path: proof/
           if-no-files-found: error

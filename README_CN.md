@@ -155,6 +155,20 @@ PASS: native Windows verification completed
 
 它不声称 Windows 编译器能直接编译整个 Linux 内核，因为 Linux Kbuild、体系结构汇编、内核头文件和目标格式都不是 Windows 原生工程。
 
+### 3.4 现代 Linux 默认 PIE 与 Linux 3.0 宿主工具
+
+Linux 3.0 的宿主程序构建规则早于现代发行版默认启用 PIE 的时代。不要给 `HOSTCFLAGS` 单独加入 `-fno-pie`，再假定 `HOSTLDFLAGS=-no-pie` 一定会被旧 Kbuild 使用。`fixdep` 等单文件宿主程序可能由同一条 `HOSTCC` 命令完成编译与链接；旧规则不会可靠转发该链接变量，可能出现：
+
+```text
+relocation R_X86_64_32 against `.rodata' can not be used when making a PIE object
+```
+
+修正版工作流将两类代码分开处理：
+
+- 宿主工具不覆盖 `HOSTCFLAGS` 和 `HOSTLDFLAGS`，沿用 Ubuntu 默认 PIE；
+- 内核目标对象只通过 `KCFLAGS="-fcommon -fno-pie"` 禁用 PIE；
+- 该兼容处理只改变构建命令，不改变 `block/` 或 `ipc/` 生产源码。
+
 ## 4. 不在本机使用虚拟机的真实 Linux 对象编译
 
 本包提供：
