@@ -1,263 +1,226 @@
-# Linux 3.0 `block/` 与 `ipc/` 现代化修复包
+# Linux 3.0 `block/` / `ipc/` 大规模可验证重构
 
-## 1. 适用范围与结论边界
+本仓库不是完整 Linux 3.0 源码树，只包含 `block/`、`ipc/` 及验证设施。因此它不能在本地直接生成 `vmlinux`。本次重构的目标不是把 Linux 3.0 强行迁移成现代内核，而是在**不改变用户态 ABI、主要算法和数据结构布局**的前提下，对内存尺寸计算、IPC 分配职责、sysfs 输入解析和验证体系做一次成体系的重构。
 
-上传的 `linux.zip` 只有两个子系统：
+## 1. 本次重构做了什么
 
-- `block/`：通用块设备层、I/O 调度器、请求队列、SCSI ioctl 等；
-- `ipc/`：System V IPC、POSIX 消息队列、共享内存、信号量等。
+### 1.1 建立统一的 checked-size 兼容层
 
-它不是完整 Linux 3.0 源码树，因此原压缩包本身不能生成 `vmlinux` 或内核镜像。本修复包提供两级证据：
+`include/linux/l30_checked_math.h` 从两个基础函数扩展为统一的尺寸策略层：
 
-1. **Windows 原生验证**：不使用虚拟机、WSL 或 Docker，直接用 MSVC/Clang 编译并运行与补丁共用的溢出检查代码，同时检查生产源码确实采用了这些修复；
-2. **完整内核对象验证**：通过 GitHub Actions 的远程 Linux 环境下载官方 Linux 3.0 源码，覆盖本补丁后编译所有发生修改的 `.o` 文件。此步骤不要求本机安装虚拟机。
+- `l30_size_add_overflow()`：检查加法；
+- `l30_size_mul_overflow()`：检查乘法；
+- `l30_size_array_bytes()`：计算 `count * element_size`；
+- `l30_size_flex_bytes()`：计算 `header + count * element_size`；
+- `l30_size_records_bytes()`：计算 `count * (payload + overhead)`。
 
-Windows 原生验证可以证明新增加的可移植代码能够编译、边界测试通过且补丁结构正确；只有第二级验证才能证明修改后的真实内核翻译单元通过 Linux Kbuild 编译。二者不能混为一谈。
+这些函数保持 header-only，并同时被内核生产源码和原生 C 测试使用，避免“测试实现与真实实现不是同一套逻辑”。
 
-## 2. 修改总览
+### 1.2 把 IPC 内存/RCU 生命周期从 `util.c` 拆成独立模块
 
-### 2.1 `block/blk-tag.c`：标签表分配安全化与简化
+原来的 `ipc/util.c` 同时承担 IPC id、权限、proc 接口、普通分配、RCU 分配和异步释放等职责。本次将约一整块内存管理逻辑抽离为：
 
-原代码直接计算：
+```text
+ipc/alloc.c
+```
+
+并通过 `ipc/Makefile` 接入 Kbuild。`ipc/alloc.c` 现在集中负责：
+
+- `ipc_alloc()` / `ipc_free()`；
+- `ipc_rcu_alloc()`；
+- RCU header 选择与初始化；
+- refcount 增减；
+- `kmalloc` / `vmalloc` 释放策略；
+- RCU 后的 `vfree()` 延迟工作。
+
+这是真正的模块边界调整，不是只改几行表达式。
+
+### 1.3 `mqueue.c`：验证、实际分配和用户计费使用同一套尺寸模型
+
+新增 `mq_calculate_sizes()`，统一计算：
+
+- 消息指针表大小；
+- payload + pointer overhead 的总队列大小。
+
+`mq_attr_ok()` 与 `mqueue_get_inode()` 都调用同一个函数，不再出现“验证时一套公式、实际分配时另一套公式”。`u->mq_bytes + mq_bytes` 也改为 checked addition。
+
+### 1.4 `sem.c`：覆盖四类动态尺寸
+
+现在以下路径都使用统一 checked-size API：
+
+- `sem_array` 主对象；
+- `GETALL/SETALL` 临时 `ushort` 数组；
+- `sem_undo` 柔性对象；
+- `semtimedop()` 的 `struct sembuf` 动态数组。
+
+旧的 `sizeof(...) * nsems`、`sizeof(*sops) * nsops`、`header + count * size` 裸表达式已从这些分配路径移除。
+
+### 1.5 `msgutil.c`：消息分段分配显式检查 header + payload
+
+首段 `msg_msg` 和后续 `msg_msgseg` 的动态分配都先计算安全的 byte count，同时显式拒绝负 `len`。
+
+### 1.6 `block/genhd.c`：分区表扩容同时处理 signed overflow 与 allocation overflow
+
+`disk_expand_part_tbl()` 先拒绝 `partno < 0` 与 `partno == INT_MAX`，避免 `partno + 1` 本身发生有符号溢出；随后用 `l30_size_flex_bytes()` 计算分区表柔性数组大小。
+
+### 1.7 `block/scsi_ioctl.c`：iovec 分配改为 checked array sizing
+
+SCSI ioctl 的 `struct sg_iovec` 数组改为 `size_t` byte count + `l30_size_array_bytes()`，不再把乘法结果先塞进 `int`。
+
+### 1.8 `block/blk-sysfs.c`：把“解析”与“store 返回值”分离
+
+原来的辅助函数同时负责解析数值和返回 sysfs `count`，职责混杂。本次改为：
 
 ```c
-kzalloc(depth * sizeof(struct request *), GFP_ATOMIC);
+queue_var_parse(page, &value)
 ```
 
-问题：
+只负责严格 `kstrtoul()` 解析；各 store handler 自己在成功后返回 `count`。所有可写队列属性继续复用同一解析入口。
 
-- `depth <= 0` 时缺少明确拒绝；
-- 元素数与元素大小先相乘，再交给分配器，表达式本身可能溢出；
-- `ALIGN(depth, BITS_PER_LONG) / BITS_PER_LONG` 可读性较差。
+### 1.9 保留并强化 `blk-tag.c` 的原有安全化
 
-修改：
+继续保留：
 
-- 初始化阶段两处检查 `depth <= 0`，并在调整标签深度时拒绝 `new_depth <= 0`；
-- 用 `kcalloc(count, size, flags)` 代替 `kzalloc(count * size, flags)`；
-- 用 `DIV_ROUND_UP(depth, BITS_PER_LONG)` 计算位图字数；
-- `blk_queue_resize_tags()` 返回 `init_tag_map()` 的真实错误码，不再把全部错误伪装成 `-ENOMEM`。
+- 非正 depth 拒绝；
+- `kcalloc()`；
+- `DIV_ROUND_UP()`；
+- resize 返回真实错误码。
 
-收益：
+## 2. 重构规模
 
-- 消除数组分配乘法溢出的典型风险；
-- 非法参数更早失败；
-- 错误诊断更准确；
-- 不改变请求队列结构、磁盘 ABI 或标签分配算法。
-
-### 2.2 `block/blk-sysfs.c`：严格解析 sysfs 数值
-
-原代码使用 `simple_strtoul()`，它会接受部分非法输入，例如数字后混入非数字字符，且调用者没有可靠区分解析失败。
-
-修改：
-
-- 改用 Linux 3.0 已存在、且延续至现代内核风格的 `kstrtoul()`；
-- 所有调用点在写入队列参数前检查负错误码；
-- 解析失败时保持原配置不变。
-
-收益：
-
-- 防止错误的 sysfs 输入被“部分解析后静默接受”；
-- 避免解析失败后使用未初始化局部变量；
-- 正常合法输入的行为不变。
-
-### 2.3 `ipc/mqueue.c`：修复消息队列容量检查中的未定义行为
-
-原代码先在 `long` 类型中进行加法和乘法，之后才转换为 `unsigned long`。若算术已经溢出，后续强制转换不能补救；有符号溢出属于 C 语言未定义行为。
-
-修改：
-
-- 新增 `include/linux/l30_checked_math.h`；
-- 先把已经验证为正数的参数转换为 `size_t`；
-- 分别检查“单条消息大小 + 指针开销”和“消息数 × 单条总开销”；
-- 删除两段重复、难读且不完整的手工比较。
-
-收益：
-
-- 每一步算术都在发生前检查；
-- 逻辑更短、更容易单元测试；
-- 不改变 `mq_open()`、`mq_send()` 等用户态接口。
-
-### 2.4 `ipc/sem.c`：信号量集合分配使用 `size_t` 与检查算术
-
-原代码：
-
-```c
-int size = sizeof(*sma) + nsems * sizeof(struct sem);
-```
-
-修改：
-
-- `size` 与中间结果改为 `size_t`；
-- 乘法和加法分别使用检查函数；
-- 溢出时返回 `-EOVERFLOW`。
-
-### 2.5 `ipc/util.c`、`ipc/util.h`：统一 IPC 分配接口类型
-
-修改：
-
-- `ipc_alloc()`、`ipc_free()`、`ipc_rcu_alloc()` 的大小参数由 `int` 改为 `size_t`；
-- RCU 头部与对象大小相加前执行溢出检查；
-- 选择 `kmalloc`/`vmalloc` 时改为无溢出的比较形式；
-- 顺带统一指针与条件语句格式。
-
-这些接口只在 `ipc/` 内部使用，不改变用户空间 ABI。
-
-## 3. Windows 原生验证：完全不用虚拟机
-
-### 3.1 安装一次性工具
-
-在 Windows 10/11 安装：
-
-1. **Visual Studio 2022 Build Tools**；
-2. 工作负载选择“使用 C++ 的桌面开发”；
-3. 勾选 MSVC v143、Windows SDK、CMake tools；
-4. 安装 Python 3，并确认安装器中的“Add Python to PATH”已选中。
-
-也可以使用已安装的 Visual Studio 2022。无需 WSL、VirtualBox、VMware 或 Docker Desktop。
-
-### 3.2 一键执行
-
-在资源管理器中进入：
+生产代码/构建层涉及的核心文件包括：
 
 ```text
-windows_verify
-```
-
-双击：
-
-```text
-verify-native.cmd
-```
-
-也可在 PowerShell 中执行：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\windows_verify\verify-native.ps1
-```
-
-### 3.3 预期结果
-
-控制台末尾应出现：
-
-```text
-100% tests passed, 0 tests failed
-PASS: source contracts for block/ and ipc/
-PASS: native Windows verification completed
-```
-
-### 3.4 这一验证具体证明什么
-
-- `l30_size_add_overflow()` 和 `l30_size_mul_overflow()` 能被 Windows C 编译器以高警告等级编译；
-- 正常值、零、`SIZE_MAX` 边界、消息队列和信号量分配场景均通过；
-- 修改后的内核源文件确实使用 `kcalloc`、`kstrtoul`、`size_t` 和检查算术；
-- 原有高风险表达式已经被删除。
-
-它不声称 Windows 编译器能直接编译整个 Linux 内核，因为 Linux Kbuild、体系结构汇编、内核头文件和目标格式都不是 Windows 原生工程。
-
-### 3.4 现代 Linux 默认 PIE 与 Linux 3.0 宿主工具
-
-Linux 3.0 的宿主程序构建规则早于现代发行版默认启用 PIE 的时代。不要给 `HOSTCFLAGS` 单独加入 `-fno-pie`，再假定 `HOSTLDFLAGS=-no-pie` 一定会被旧 Kbuild 使用。`fixdep` 等单文件宿主程序可能由同一条 `HOSTCC` 命令完成编译与链接；旧规则不会可靠转发该链接变量，可能出现：
-
-```text
-relocation R_X86_64_32 against `.rodata' can not be used when making a PIE object
-```
-
-修正版工作流将两类代码分开处理：
-
-- 宿主工具不覆盖 `HOSTCFLAGS` 和 `HOSTLDFLAGS`，沿用 Ubuntu 默认 PIE；
-- 内核目标对象只通过 `KCFLAGS="-fcommon -fno-pie"` 禁用 PIE；
-- 该兼容处理只改变构建命令，不改变 `block/` 或 `ipc/` 生产源码。
-
-## 4. 不在本机使用虚拟机的真实 Linux 对象编译
-
-本包提供：
-
-```text
-.github/workflows/linux30-object-build.yml
-```
-
-### 操作步骤
-
-1. 在 GitHub 新建一个空仓库；
-2. 把本修复包全部文件提交并推送；
-3. 打开仓库的 **Actions** 页面；
-4. 选择 **Linux 3.0 modified object build**；
-5. 点击 **Run workflow**；
-6. 等待两个任务均显示绿色勾号；
-7. 展开 `Build changed kernel objects`，确认以下对象均生成；
-8. 在运行页面底部下载 `linux-3.0-modified-objects`，其中包含五个 `.o`、完整构建日志和 SHA-256 清单：
-
-```text
-block/blk-tag.o
-block/blk-sysfs.o
-ipc/mqueue.o
-ipc/sem.o
-ipc/util.o
-```
-
-工作流会自动：
-
-- 从 kernel.org 下载官方 `linux-3.0.tar.xz`；
-- 覆盖本包中修改的文件；
-- 执行 `make defconfig`、`make prepare scripts`；
-- 仅编译发生修改的真实内核目标对象；
-- 再次运行 Windows 同源的可移植单元测试和源码约束检查。
-
-这比为了课程展示完整启动一个虚拟机更直接：验证目标是“补丁能否进入 Linux 3.0 的实际构建系统并生成对象文件”，而不是“内核能否在某个虚拟硬件上启动”。
-
-## 5. 将补丁应用到完整 Linux 3.0 源码
-
-获得完整官方源码后，在源码根目录执行：
-
-```bash
-patch -p1 < linux-3.0-block-ipc-modernization.patch
-```
-
-或者直接复制本包中的：
-
-```text
-block/blk-tag.c
 block/blk-sysfs.c
+block/blk-tag.c
+block/genhd.c
+block/scsi_ioctl.c
+ipc/Makefile
+ipc/alloc.c            # 新模块
 ipc/mqueue.c
+ipc/msgutil.c
 ipc/sem.c
 ipc/util.c
 ipc/util.h
 include/linux/l30_checked_math.h
 ```
 
-然后编译修改对象：
-
-```bash
-make defconfig
-make prepare scripts
-make -j2 block/blk-tag.o block/blk-sysfs.o ipc/mqueue.o ipc/sem.o ipc/util.o
-```
-
-## 6. 课程展示建议
-
-建议按以下顺序演示，约 6—10 分钟：
-
-1. 展示原始 `depth * sizeof(...)`、`simple_strtoul()` 和消息队列溢出检查；
-2. 解释“强制转换发生在运算之后，不能挽救已经发生的有符号溢出”；
-3. 展示 `kcalloc`、现代 `kstrtoul()` 严格解析和检查算术后的代码；
-4. 在 Windows 双击 `verify-native.cmd`，展示所有测试通过；
-5. 展示 GitHub Actions 中五个真实内核 `.o` 文件编译成功；
-6. 强调未改变系统调用 ABI、数据结构布局和调度算法，因此回归风险可控。
-
-## 7. 当前交付包的验证状态
-
-当前环境已经实际完成 GCC 与 Clang 高警告编译测试、边界单元测试、源码契约检查和补丁干净应用测试。由于附件不是完整源码，且当前沙箱无法下载 kernel.org 源码，GitHub Actions 中的真实 Kbuild 步骤尚未替你远程执行；运行工作流后的绿色结果与下载得到的五个 `.o` 才是“真实 Linux 3.0 翻译单元无编译错误”的最终证明。详见 `VERIFICATION_STATUS.md`。
-
-## 8. 文件说明
+验证层同时重做：
 
 ```text
-block/                                  修改后的块设备层源码
-ipc/                                    修改后的 IPC 源码
-include/linux/l30_checked_math.h         Linux 3.0 缺少的检查算术小型兼容层
-windows_verify/                          Windows 原生编译、单元测试和源码检查
-.github/workflows/linux30-object-build.yml 远程真实 Kbuild 对象编译
-linux-3.0-block-ipc-modernization.patch  可应用到完整 Linux 3.0 的补丁
-MODERNIZATION_REPORT.md                  详细设计与风险分析
-VERIFICATION_STATUS.md                    已执行与尚未执行的验证边界
+windows_verify/checked_math_test.c
+windows_verify/allocation_policy_test.c   # 新增
+windows_verify/source_contract_test.py
+windows_verify/verify-local.sh             # 新增
+windows_verify/verify-native.ps1
+.github/workflows/linux30-object-build.yml
+ci/build-linux30-gcc48.sh
+```
+
+## 3. 本地一键验证
+
+### Linux / macOS / Git Bash
+
+```bash
+./windows_verify/verify-local.sh
+```
+
+它会从零建立临时 CMake build，并依次执行：
+
+1. 严格警告级别编译两个可移植 C 测试；
+2. CTest 运行 checked-size 与 allocation-policy 测试；
+3. Python 执行 6 组源码/架构契约。
+
+当前重构环境中的实际结果：
+
+```text
+100% tests passed, 0 tests failed out of 2
+PASS: 6 source-contract groups
+PASS: local verification completed
+```
+
+同一套 C 测试已分别使用 GCC 14.2 与 Clang 17 在 `-Wall -Wextra -Werror -pedantic` 下实际通过。
+
+### Windows 原生
+
+安装 Visual Studio 2022 Build Tools / CMake / Python 后，可直接运行：
+
+```text
+windows_verify\verify-native.cmd
+```
+
+或：
+
+```powershell
+.\windows_verify\verify-native.ps1
+```
+
+PowerShell 脚本会先删除旧 build，再重新配置、编译、测试和执行 source contracts，避免旧二进制掩盖源码问题。
+
+## 4. 源码契约具体会检测什么
+
+`source_contract_test.py` 不只搜索“新函数是否存在”，还主动检查旧危险模式不得出现，例如：
+
+- `ipc_alloc()` / `ipc_rcu_alloc()` 不得继续定义在 `util.c`；
+- `ipc/alloc.c` 必须接入 Kbuild；
+- `mqueue` 的验证与实际分配必须共用 `mq_calculate_sizes()`；
+- `sem.c` 中指定的裸 `count * sizeof(...)` 分配表达式必须消失；
+- `genhd.c` 必须处理 `partno + 1` 的 signed overflow；
+- SCSI iovec 必须使用 checked array sizing；
+- sysfs 不得退回 `simple_strtoul()` / `strict_strtoul()`；
+- CI 必须真实编译全部受影响对象。
+
+因此，后续如果有人只删掉安全检查或把旧表达式改回来，本地验证会直接失败。
+
+## 5. 真实 Linux 3.0 Kbuild 验证
+
+`.github/workflows/linux30-object-build.yml` 会：
+
+1. 下载官方 Linux 3.0 完整源码；
+2. 覆盖本仓库中所有重构文件与 `ipc/Makefile`；
+3. 在 Ubuntu 14.04 / GCC 4.8 容器中运行 Linux 3.0 Kbuild；
+4. 编译以下 9 个真实对象：
+
+```text
+block/blk-tag.o
+block/blk-sysfs.o
+block/genhd.o
+block/scsi_ioctl.o
+ipc/alloc.o
+ipc/mqueue.o
+ipc/msgutil.o
+ipc/sem.o
+ipc/util.o
+```
+
+5. 再运行源码契约；
+6. 上传 `.o`、完整 build log 和 SHA-256 清单。
+
+Linux 3.0 的 `compiler-gcc${__GNUC__}.h` 机制只直接支持当时的 GCC 世代，因此这里故意使用 GCC 4.8，而不是把“把整个 Linux 3.0 迁移到 GCC 14”混入本次子系统重构。
+
+## 6. 验证结论边界
+
+当前环境已经实际证明：
+
+- 新 checked-size 兼容层可以被 GCC 14.2 和 Clang 17 严格编译；
+- 两个原生 C 测试 2/2 通过；
+- 6 组生产源码/架构契约通过；
+- `git diff --check`、Python 语法检查、Shell 语法检查、GitHub Actions YAML 解析均通过。
+
+当前环境**没有 Docker，也没有 GCC 4.8，且附件不是完整 Linux 3.0 树**，所以不能声称本地已经完成真实内核对象 Kbuild。最终的 Linux 3.0 编译证据应以 GitHub Actions 的 `kernel-objects` job 绿色通过为准。
+
+## 7. 为什么没有重写成 blk-mq / 现代 IPC
+
+真正把 Linux 3.0 块层替换为现代 `blk-mq`，或把 IPC 全量同步到当前 Linux，会影响大量驱动、架构代码、头文件、锁语义和 ABI 细节。在只有 `block/` 与 `ipc/` 子树的项目里，这种改造无法建立可信的完整回归证据。
+
+本次选择的是“足够大、但边界可控”的重构：改变模块职责和多条分配路径，同时保留外部行为，能够用原生测试、源码契约和真实 Kbuild 三层证据检测效果。
+
+## 8. 主要文件
+
+```text
+README_CN.md                         使用与设计说明
+MODERNIZATION_REPORT.md              详细审查与重构报告
+VERIFICATION_STATUS.md               当前实际验证状态
+LARGE_REFACTOR.patch                 相对本仓库原状态的本次重构补丁
+SHA256SUMS.txt                       关键交付文件校验值
 ```

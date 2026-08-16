@@ -22,18 +22,9 @@ queue_var_show(unsigned long var, char *page)
 	return sprintf(page, "%lu\n", var);
 }
 
-static ssize_t
-queue_var_store(unsigned long *var, const char *page, size_t count)
+static int queue_var_parse(const char *page, unsigned long *value)
 {
-	unsigned long value;
-	int ret;
-
-	ret = kstrtoul(page, 10, &value);
-	if (ret)
-		return ret;
-
-	*var = value;
-	return count;
+	return kstrtoul(page, 10, value);
 }
 
 static ssize_t queue_requests_show(struct request_queue *q, char *page)
@@ -51,7 +42,7 @@ queue_requests_store(struct request_queue *q, const char *page, size_t count)
 	if (!q->request_fn)
 		return -EINVAL;
 
-	ret = queue_var_store(&nr, page, count);
+	ret = queue_var_parse(page, &nr);
 	if (ret < 0)
 		return ret;
 	if (nr < BLKDEV_MIN_RQ)
@@ -85,7 +76,7 @@ queue_requests_store(struct request_queue *q, const char *page, size_t count)
 		wake_up(&rl->wait[BLK_RW_ASYNC]);
 	}
 	spin_unlock_irq(q->queue_lock);
-	return ret;
+	return count;
 }
 
 static ssize_t queue_ra_show(struct request_queue *q, char *page)
@@ -100,13 +91,14 @@ static ssize_t
 queue_ra_store(struct request_queue *q, const char *page, size_t count)
 {
 	unsigned long ra_kb;
-	ssize_t ret = queue_var_store(&ra_kb, page, count);
+	int ret;
 
-	if (ret < 0)
+	ret = queue_var_parse(page, &ra_kb);
+	if (ret)
 		return ret;
 	q->backing_dev_info.ra_pages = ra_kb >> (PAGE_CACHE_SHIFT - 10);
 
-	return ret;
+	return count;
 }
 
 static ssize_t queue_max_sectors_show(struct request_queue *q, char *page)
@@ -176,9 +168,10 @@ queue_max_sectors_store(struct request_queue *q, const char *page, size_t count)
 	unsigned long max_sectors_kb,
 		max_hw_sectors_kb = queue_max_hw_sectors(q) >> 1,
 			page_kb = 1 << (PAGE_CACHE_SHIFT - 10);
-	ssize_t ret = queue_var_store(&max_sectors_kb, page, count);
+	int ret;
 
-	if (ret < 0)
+	ret = queue_var_parse(page, &max_sectors_kb);
+	if (ret)
 		return ret;
 	if (max_sectors_kb > max_hw_sectors_kb || max_sectors_kb < page_kb)
 		return -EINVAL;
@@ -187,7 +180,7 @@ queue_max_sectors_store(struct request_queue *q, const char *page, size_t count)
 	q->limits.max_sectors = max_sectors_kb << 1;
 	spin_unlock_irq(q->queue_lock);
 
-	return ret;
+	return count;
 }
 
 static ssize_t queue_max_hw_sectors_show(struct request_queue *q, char *page)
@@ -209,10 +202,10 @@ static ssize_t								\
 queue_store_##name(struct request_queue *q, const char *page, size_t count) \
 {									\
 	unsigned long val;						\
-	ssize_t ret;							\
-	ret = queue_var_store(&val, page, count);			\
-	if (ret < 0)						\
-		return ret;					\
+	int ret;							\
+	ret = queue_var_parse(page, &val);				\
+	if (ret)							\
+		return ret;						\
 	if (neg)							\
 		val = !val;						\
 									\
@@ -222,7 +215,7 @@ queue_store_##name(struct request_queue *q, const char *page, size_t count) \
 	else								\
 		queue_flag_clear(QUEUE_FLAG_##flag, q);			\
 	spin_unlock_irq(q->queue_lock);					\
-	return ret;							\
+	return count;							\
 }
 
 QUEUE_SYSFS_BIT_FNS(nonrot, NONROT, 1);
@@ -240,9 +233,10 @@ static ssize_t queue_nomerges_store(struct request_queue *q, const char *page,
 				    size_t count)
 {
 	unsigned long nm;
-	ssize_t ret = queue_var_store(&nm, page, count);
+	int ret;
 
-	if (ret < 0)
+	ret = queue_var_parse(page, &nm);
+	if (ret)
 		return ret;
 	spin_lock_irq(q->queue_lock);
 	queue_flag_clear(QUEUE_FLAG_NOMERGES, q);
@@ -253,7 +247,7 @@ static ssize_t queue_nomerges_store(struct request_queue *q, const char *page,
 		queue_flag_set(QUEUE_FLAG_NOXMERGES, q);
 	spin_unlock_irq(q->queue_lock);
 
-	return ret;
+	return count;
 }
 
 static ssize_t queue_rq_affinity_show(struct request_queue *q, char *page)
@@ -266,12 +260,12 @@ static ssize_t queue_rq_affinity_show(struct request_queue *q, char *page)
 static ssize_t
 queue_rq_affinity_store(struct request_queue *q, const char *page, size_t count)
 {
-	ssize_t ret = -EINVAL;
+	int ret = -EINVAL;
 #if defined(CONFIG_USE_GENERIC_SMP_HELPERS)
 	unsigned long val;
 
-	ret = queue_var_store(&val, page, count);
-	if (ret < 0)
+	ret = queue_var_parse(page, &val);
+	if (ret)
 		return ret;
 	spin_lock_irq(q->queue_lock);
 	if (val)
@@ -279,6 +273,7 @@ queue_rq_affinity_store(struct request_queue *q, const char *page, size_t count)
 	else
 		queue_flag_clear(QUEUE_FLAG_SAME_COMP,  q);
 	spin_unlock_irq(q->queue_lock);
+	return count;
 #endif
 	return ret;
 }

@@ -1,4 +1,4 @@
-name: Linux 3.0 modified object build
+name: Linux 3.0 refactor verification
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
 
 jobs:
   portable-tests:
-    name: Portable arithmetic and source tests
+    name: Portable policy and source-contract tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
         run: .\windows_verify\verify-native.ps1
 
   kernel-objects:
-    name: Build changed Linux 3.0 objects with GCC 4.8
+    name: Build all refactored Linux 3.0 objects with GCC 4.8
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,25 +38,25 @@ jobs:
             --output linux-3.0.tar.xz
           tar -xf linux-3.0.tar.xz
 
-      - name: Overlay modified sources
+      - name: Overlay refactored sources
         shell: bash
         run: |
           set -euxo pipefail
           cp block/blk-tag.c linux-3.0/block/blk-tag.c
           cp block/blk-sysfs.c linux-3.0/block/blk-sysfs.c
+          cp block/genhd.c linux-3.0/block/genhd.c
+          cp block/scsi_ioctl.c linux-3.0/block/scsi_ioctl.c
+          cp ipc/Makefile linux-3.0/ipc/Makefile
+          cp ipc/alloc.c linux-3.0/ipc/alloc.c
           cp ipc/mqueue.c linux-3.0/ipc/mqueue.c
+          cp ipc/msgutil.c linux-3.0/ipc/msgutil.c
           cp ipc/sem.c linux-3.0/ipc/sem.c
           cp ipc/util.c linux-3.0/ipc/util.c
           cp ipc/util.h linux-3.0/ipc/util.h
           cp include/linux/l30_checked_math.h \
              linux-3.0/include/linux/l30_checked_math.h
 
-      # Linux 3.0 selects include/linux/compiler-gcc${__GNUC__}.h.
-      # Keep the proof build on the GCC 4.x generation instead of porting the
-      # entire 2011 kernel compiler layer merely to compile these five objects.
-      # A step-level Docker container is used so actions/checkout@v4 can still
-      # run on the modern GitHub runner.
-      - name: Build changed objects in Ubuntu 14.04 / GCC 4.8
+      - name: Build refactored objects in Ubuntu 14.04 / GCC 4.8
         shell: bash
         run: |
           set -euxo pipefail
@@ -66,28 +66,35 @@ jobs:
             ubuntu:14.04 \
             bash /work/ci/build-linux30-gcc48.sh
 
+      - name: Re-run source contracts on Linux runner
+        shell: bash
+        run: python3 windows_verify/source_contract_test.py
+
       - name: Assemble proof artifact
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p proof
-          cp linux-3.0/block/blk-tag.o proof/
-          cp linux-3.0/block/blk-sysfs.o proof/
-          cp linux-3.0/ipc/mqueue.o proof/
-          cp linux-3.0/ipc/sem.o proof/
-          cp linux-3.0/ipc/util.o proof/
+          for object in \
+            block/blk-tag.o \
+            block/blk-sysfs.o \
+            block/genhd.o \
+            block/scsi_ioctl.o \
+            ipc/alloc.o \
+            ipc/mqueue.o \
+            ipc/msgutil.o \
+            ipc/sem.o \
+            ipc/util.o; do
+            test -s "linux-3.0/$object"
+            cp "linux-3.0/$object" proof/
+          done
           cp changed-objects-build.log proof/
           sha256sum proof/*.o > proof/SHA256SUMS.txt
-          test -s proof/blk-tag.o
-          test -s proof/blk-sysfs.o
-          test -s proof/mqueue.o
-          test -s proof/sem.o
-          test -s proof/util.o
           cat proof/SHA256SUMS.txt
 
       - name: Upload compiled proof
         uses: actions/upload-artifact@v4
         with:
-          name: linux-3.0-modified-objects-gcc48
+          name: linux-3.0-refactored-objects-gcc48
           path: proof/
           if-no-files-found: error

@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <linux/ipc.h>
 #include <linux/ipc_namespace.h>
+#include <linux/l30_checked_math.h>
 #include <asm/uaccess.h>
 
 #include "util.h"
@@ -51,12 +52,19 @@ struct msg_msg *load_msg(const void __user *src, int len)
 	struct msg_msgseg **pseg;
 	int err;
 	int alen;
+	size_t allocation_size;
+
+	if (len < 0)
+		return ERR_PTR(-EINVAL);
 
 	alen = len;
 	if (alen > DATALEN_MSG)
 		alen = DATALEN_MSG;
 
-	msg = kmalloc(sizeof(*msg) + alen, GFP_KERNEL);
+	if (l30_size_add_overflow(sizeof(*msg), (size_t)alen,
+				  &allocation_size))
+		return ERR_PTR(-EOVERFLOW);
+	msg = kmalloc(allocation_size, GFP_KERNEL);
 	if (msg == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -76,8 +84,12 @@ struct msg_msg *load_msg(const void __user *src, int len)
 		alen = len;
 		if (alen > DATALEN_SEG)
 			alen = DATALEN_SEG;
-		seg = kmalloc(sizeof(*seg) + alen,
-						 GFP_KERNEL);
+		if (l30_size_add_overflow(sizeof(*seg), (size_t)alen,
+					  &allocation_size)) {
+			err = -EOVERFLOW;
+			goto out_err;
+		}
+		seg = kmalloc(allocation_size, GFP_KERNEL);
 		if (seg == NULL) {
 			err = -ENOMEM;
 			goto out_err;

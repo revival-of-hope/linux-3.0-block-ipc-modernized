@@ -108,6 +108,19 @@ static struct ipc_namespace *get_ns_from_inode(struct inode *inode)
 	return ns;
 }
 
+static int mq_calculate_sizes(const struct mq_attr *attr, size_t *table_bytes,
+			      size_t *queue_bytes)
+{
+	if (l30_size_array_bytes((size_t)attr->mq_maxmsg,
+				 sizeof(struct msg_msg *), table_bytes) ||
+	    l30_size_records_bytes((size_t)attr->mq_maxmsg,
+				   (size_t)attr->mq_msgsize,
+				   sizeof(struct msg_msg *), queue_bytes))
+		return -EOVERFLOW;
+
+	return 0;
+}
+
 static struct inode *mqueue_get_inode(struct super_block *sb,
 		struct ipc_namespace *ipc_ns, int mode,
 		struct mq_attr *attr)
@@ -127,7 +140,7 @@ static struct inode *mqueue_get_inode(struct super_block *sb,
 		if (S_ISREG(mode)) {
 			struct mqueue_inode_info *info;
 			struct task_struct *p = current;
-			unsigned long mq_bytes, mq_msg_tblsz;
+			size_t mq_bytes, mq_msg_tblsz, user_mq_bytes;
 
 			inode->i_fop = &mqueue_file_operations;
 			inode->i_size = FILENT_SIZE;
@@ -147,23 +160,22 @@ static struct inode *mqueue_get_inode(struct super_block *sb,
 				info->attr.mq_maxmsg = attr->mq_maxmsg;
 				info->attr.mq_msgsize = attr->mq_msgsize;
 			}
-			mq_msg_tblsz = info->attr.mq_maxmsg * sizeof(struct msg_msg *);
+			if (mq_calculate_sizes(&info->attr, &mq_msg_tblsz,
+					       &mq_bytes))
+				goto out_inode;
 			info->messages = kmalloc(mq_msg_tblsz, GFP_KERNEL);
 			if (!info->messages)
 				goto out_inode;
 
-			mq_bytes = (mq_msg_tblsz +
-				(info->attr.mq_maxmsg * info->attr.mq_msgsize));
-
 			spin_lock(&mq_lock);
-			if (u->mq_bytes + mq_bytes < u->mq_bytes ||
-		 	    u->mq_bytes + mq_bytes >
-			    task_rlimit(p, RLIMIT_MSGQUEUE)) {
+			if (l30_size_add_overflow((size_t)u->mq_bytes, mq_bytes,
+					  &user_mq_bytes) ||
+			    user_mq_bytes > task_rlimit(p, RLIMIT_MSGQUEUE)) {
 				spin_unlock(&mq_lock);
 				/* mqueue_evict_inode() releases info->messages */
 				goto out_inode;
 			}
-			u->mq_bytes += mq_bytes;
+			u->mq_bytes = user_mq_bytes;
 			spin_unlock(&mq_lock);
 
 			/* all is ok */
@@ -254,7 +266,8 @@ static void mqueue_evict_inode(struct inode *inode)
 {
 	struct mqueue_inode_info *info;
 	struct user_struct *user;
-	unsigned long mq_bytes;
+	size_t table_bytes;
+	size_t mq_bytes;
 	int i;
 	struct ipc_namespace *ipc_ns;
 
@@ -271,9 +284,9 @@ static void mqueue_evict_inode(struct inode *inode)
 	kfree(info->messages);
 	spin_unlock(&info->lock);
 
-	/* Total amount of bytes accounted for the mqueue */
-	mq_bytes = info->attr.mq_maxmsg * (sizeof(struct msg_msg *)
-	    + info->attr.mq_msgsize);
+	/* Reuse the exact byte model used when the queue was accounted. */
+	if (mq_calculate_sizes(&info->attr, &table_bytes, &mq_bytes))
+		mq_bytes = 0;
 	user = info->user;
 	if (user) {
 		spin_lock(&mq_lock);
@@ -585,7 +598,8 @@ static void remove_notification(struct mqueue_inode_info *info)
 
 static int mq_attr_ok(struct ipc_namespace *ipc_ns, struct mq_attr *attr)
 {
-	size_t bytes_per_message;
+	size_t table_bytes;
+	size_t queue_bytes;
 
 	if (attr->mq_maxmsg <= 0 || attr->mq_msgsize <= 0)
 		return 0;
@@ -598,15 +612,8 @@ static int mq_attr_ok(struct ipc_namespace *ipc_ns, struct mq_attr *attr)
 			return 0;
 	}
 
-	/*
-	 * Perform all arithmetic after conversion to size_t.  The original
-	 * expression could overflow signed long before its cast took effect.
-	 */
-	if (l30_size_add_overflow((size_t)attr->mq_msgsize,
-				   sizeof(struct msg_msg *),
-				   &bytes_per_message) ||
-	    l30_size_mul_overflow((size_t)attr->mq_maxmsg,
-				   bytes_per_message, &bytes_per_message))
+	/* Validate the exact byte accounting used later by mqueue_get_inode(). */
+	if (mq_calculate_sizes(attr, &table_bytes, &queue_bytes))
 		return 0;
 
 	return 1;

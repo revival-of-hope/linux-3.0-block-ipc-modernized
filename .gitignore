@@ -1,1 +1,6 @@
 build
+windows_verify/build/
+proof/
+linux-3.0/
+linux-3.0.tar.xz
+changed-objects-build.log

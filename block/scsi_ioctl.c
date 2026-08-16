@@ -26,6 +26,7 @@
 #include <linux/cdrom.h>
 #include <linux/slab.h>
 #include <linux/times.h>
+#include <linux/l30_checked_math.h>
 #include <asm/uaccess.h>
 
 #include <scsi/scsi.h>
@@ -319,12 +320,17 @@ static int sg_io(struct request_queue *q, struct gendisk *bd_disk,
 	}
 
 	if (hdr->iovec_count) {
-		const int size = sizeof(struct sg_iovec) * hdr->iovec_count;
+		size_t size;
 		size_t iov_data_len;
 		struct sg_iovec *sg_iov;
 		struct iovec *iov;
 		int i;
 
+		if (l30_size_array_bytes((size_t)hdr->iovec_count,
+					 sizeof(*sg_iov), &size)) {
+			ret = -EOVERFLOW;
+			goto out;
+		}
 		sg_iov = kmalloc(size, GFP_KERNEL);
 		if (!sg_iov) {
 			ret = -ENOMEM;

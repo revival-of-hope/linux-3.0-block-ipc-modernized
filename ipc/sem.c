@@ -242,7 +242,6 @@ static int newary(struct ipc_namespace *ns, struct ipc_params *params)
 	int id;
 	int retval;
 	struct sem_array *sma;
-	size_t sem_bytes;
 	size_t size;
 	key_t key = params->key;
 	int nsems = params->u.nsems;
@@ -255,9 +254,8 @@ static int newary(struct ipc_namespace *ns, struct ipc_params *params)
 	    nsems > ns->sc_semmns - ns->used_sems)
 		return -ENOSPC;
 
-	if (l30_size_mul_overflow((size_t)nsems, sizeof(struct sem),
-				   &sem_bytes) ||
-	    l30_size_add_overflow(sizeof(*sma), sem_bytes, &size))
+	if (l30_size_flex_bytes(sizeof(*sma), (size_t)nsems,
+				 sizeof(struct sem), &size))
 		return -EOVERFLOW;
 
 	sma = ipc_rcu_alloc(size);
@@ -859,6 +857,7 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 	int err;
 	ushort fast_sem_io[SEMMSL_FAST];
 	ushort* sem_io = fast_sem_io;
+	size_t sem_io_bytes;
 	int nsems;
 	struct list_head tasks;
 
@@ -868,6 +867,11 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 
 	INIT_LIST_HEAD(&tasks);
 	nsems = sma->sem_nsems;
+	if (l30_size_array_bytes((size_t)nsems, sizeof(*sem_io),
+				 &sem_io_bytes)) {
+		err = -EOVERFLOW;
+		goto out_unlock;
+	}
 
 	err = -EACCES;
 	if (ipcperms(ns, &sma->sem_perm,
@@ -888,7 +892,7 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 		if(nsems > SEMMSL_FAST) {
 			sem_getref_and_unlock(sma);
 
-			sem_io = ipc_alloc(sizeof(ushort)*nsems);
+			sem_io = ipc_alloc(sem_io_bytes);
 			if(sem_io == NULL) {
 				sem_putref(sma);
 				return -ENOMEM;
@@ -906,7 +910,7 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 			sem_io[i] = sma->sem_base[i].semval;
 		sem_unlock(sma);
 		err = 0;
-		if(copy_to_user(array, sem_io, nsems*sizeof(ushort)))
+		if(copy_to_user(array, sem_io, sem_io_bytes))
 			err = -EFAULT;
 		goto out_free;
 	}
@@ -918,14 +922,14 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 		sem_getref_and_unlock(sma);
 
 		if(nsems > SEMMSL_FAST) {
-			sem_io = ipc_alloc(sizeof(ushort)*nsems);
+			sem_io = ipc_alloc(sem_io_bytes);
 			if(sem_io == NULL) {
 				sem_putref(sma);
 				return -ENOMEM;
 			}
 		}
 
-		if (copy_from_user (sem_io, arg.array, nsems*sizeof(ushort))) {
+		if (copy_from_user (sem_io, arg.array, sem_io_bytes)) {
 			sem_putref(sma);
 			err = -EFAULT;
 			goto out_free;
@@ -1008,7 +1012,7 @@ out_unlock:
 
 out_free:
 	if(sem_io != fast_sem_io)
-		ipc_free(sem_io, sizeof(ushort)*nsems);
+		ipc_free(sem_io, sem_io_bytes);
 	return err;
 }
 
@@ -1201,6 +1205,7 @@ static struct sem_undo *find_alloc_undo(struct ipc_namespace *ns, int semid)
 	struct sem_array *sma;
 	struct sem_undo_list *ulp;
 	struct sem_undo *un, *new;
+	size_t undo_size;
 	int nsems;
 	int error;
 
@@ -1226,7 +1231,12 @@ static struct sem_undo *find_alloc_undo(struct ipc_namespace *ns, int semid)
 	sem_getref_and_unlock(sma);
 
 	/* step 2: allocate new undo structure */
-	new = kzalloc(sizeof(struct sem_undo) + sizeof(short)*nsems, GFP_KERNEL);
+	if (l30_size_flex_bytes(sizeof(*new), (size_t)nsems, sizeof(short),
+				&undo_size)) {
+		sem_putref(sma);
+		return ERR_PTR(-EOVERFLOW);
+	}
+	new = kzalloc(undo_size, GFP_KERNEL);
 	if (!new) {
 		sem_putref(sma);
 		return ERR_PTR(-ENOMEM);
@@ -1302,6 +1312,7 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 	struct sem_array *sma;
 	struct sembuf fast_sops[SEMOPM_FAST];
 	struct sembuf* sops = fast_sops, *sop;
+	size_t sops_bytes;
 	struct sem_undo *un;
 	int undos = 0, alter = 0, max;
 	struct sem_queue queue;
@@ -1315,12 +1326,14 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 		return -EINVAL;
 	if (nsops > ns->sc_semopm)
 		return -E2BIG;
+	if (l30_size_array_bytes((size_t)nsops, sizeof(*sops), &sops_bytes))
+		return -EOVERFLOW;
 	if(nsops > SEMOPM_FAST) {
-		sops = kmalloc(sizeof(*sops)*nsops,GFP_KERNEL);
+		sops = kmalloc(sops_bytes, GFP_KERNEL);
 		if(sops==NULL)
 			return -ENOMEM;
 	}
-	if (copy_from_user (sops, tsops, nsops * sizeof(*tsops))) {
+	if (copy_from_user (sops, tsops, sops_bytes)) {
 		error=-EFAULT;
 		goto out_free;
 	}

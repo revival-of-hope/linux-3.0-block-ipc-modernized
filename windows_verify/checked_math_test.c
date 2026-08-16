@@ -43,48 +43,54 @@ static void test_multiply(void)
 		     "largest safe multiple of four must not overflow");
 }
 
-static void test_mqueue_accounting(void)
+static void test_array_bytes(void)
 {
-	size_t bytes_per_message;
-	size_t queue_bytes;
+	size_t result = 0;
 	const size_t max = (size_t)-1;
 
-	require_true(!l30_size_add_overflow(8192, sizeof(void *),
-					    &bytes_per_message),
-		     "normal message overhead must fit");
-	require_true(!l30_size_mul_overflow(128, bytes_per_message,
-					    &queue_bytes),
-		     "normal queue allocation must fit");
-	require_true(queue_bytes >= 128u * 8192u,
-		     "queue accounting must include payload bytes");
-	require_true(l30_size_add_overflow(max, sizeof(void *),
-					   &bytes_per_message),
-		     "message overhead addition must reject overflow");
+	require_true(!l30_size_array_bytes(128, sizeof(void *), &result),
+		     "normal pointer table must fit");
+	require_true(result == 128u * sizeof(void *),
+		     "pointer table byte count must be exact");
+	require_true(l30_size_array_bytes(max, sizeof(void *), &result),
+		     "oversized pointer table must overflow");
 }
 
-static void test_semaphore_accounting(void)
+static void test_flexible_object_bytes(void)
 {
-	size_t sem_bytes;
-	size_t allocation_size;
+	size_t result = 0;
 	const size_t max = (size_t)-1;
 
-	require_true(!l30_size_mul_overflow(32000, 32, &sem_bytes),
-		     "normal semaphore array must fit");
-	require_true(!l30_size_add_overflow(128, sem_bytes,
-					    &allocation_size),
-		     "normal semaphore header addition must fit");
-	require_true(allocation_size == 1024128,
-		     "semaphore accounting must be exact");
-	require_true(l30_size_mul_overflow(max, 32, &sem_bytes),
-		     "oversized semaphore array must be rejected");
+	require_true(!l30_size_flex_bytes(128, 32000, 32, &result),
+		     "normal flexible allocation must fit");
+	require_true(result == 1024128,
+		     "flexible allocation byte count must be exact");
+	require_true(l30_size_flex_bytes(128, max, 32, &result),
+		     "flexible payload multiplication must reject overflow");
+	require_true(l30_size_flex_bytes(max - 4, 1, 8, &result),
+		     "flexible header addition must reject overflow");
+}
+
+static void test_record_bytes(void)
+{
+	size_t result = 0;
+	const size_t max = (size_t)-1;
+
+	require_true(!l30_size_records_bytes(128, 8192, sizeof(void *), &result),
+		     "normal record accounting must fit");
+	require_true(result >= 128u * 8192u,
+		     "record accounting must include payload bytes");
+	require_true(l30_size_records_bytes(1, max, sizeof(void *), &result),
+		     "record payload + overhead must reject overflow");
 }
 
 int main(void)
 {
 	test_add();
 	test_multiply();
-	test_mqueue_accounting();
-	test_semaphore_accounting();
-	puts("PASS: checked arithmetic and allocation accounting");
+	test_array_bytes();
+	test_flexible_object_bytes();
+	test_record_bytes();
+	puts("PASS: checked size arithmetic policy");
 	return EXIT_SUCCESS;
 }

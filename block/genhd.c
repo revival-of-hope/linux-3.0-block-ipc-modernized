@@ -19,6 +19,7 @@
 #include <linux/mutex.h>
 #include <linux/idr.h>
 #include <linux/log2.h>
+#include <linux/l30_checked_math.h>
 
 #include "blk.h"
 
@@ -1069,9 +1070,13 @@ int disk_expand_part_tbl(struct gendisk *disk, int partno)
 	struct disk_part_tbl *old_ptbl = disk->part_tbl;
 	struct disk_part_tbl *new_ptbl;
 	int len = old_ptbl ? old_ptbl->len : 0;
-	int target = partno + 1;
+	int target;
 	size_t size;
 	int i;
+
+	if (partno < 0 || partno == INT_MAX)
+		return -EINVAL;
+	target = partno + 1;
 
 	/* disk_max_parts() is zero during initialization, ignore if so */
 	if (disk_max_parts(disk) && target > disk_max_parts(disk))
@@ -1080,7 +1085,9 @@ int disk_expand_part_tbl(struct gendisk *disk, int partno)
 	if (target <= len)
 		return 0;
 
-	size = sizeof(*new_ptbl) + target * sizeof(new_ptbl->part[0]);
+	if (l30_size_flex_bytes(sizeof(*new_ptbl), (size_t)target,
+				 sizeof(new_ptbl->part[0]), &size))
+		return -EOVERFLOW;
 	new_ptbl = kzalloc_node(size, GFP_KERNEL, disk->node_id);
 	if (!new_ptbl)
 		return -ENOMEM;
