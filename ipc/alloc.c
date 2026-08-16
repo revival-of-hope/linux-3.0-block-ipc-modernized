@@ -15,7 +15,7 @@
 #include <linux/workqueue.h>
 #include <linux/l30_checked_math.h>
 
-#include "util.h"
+#include "alloc.h"
 
 /**
  * ipc_alloc - allocate IPC scratch space

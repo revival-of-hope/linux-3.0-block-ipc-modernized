@@ -50,6 +50,7 @@ def check_ipc_allocator_split() -> None:
     makefile = read("ipc/Makefile")
     util = read("ipc/util.c")
     alloc = read("ipc/alloc.c")
+    alloc_h = read("ipc/alloc.h")
     util_h = read("ipc/util.h")
 
     require("util.o alloc.o msgutil.o" in makefile,
@@ -61,13 +62,31 @@ def check_ipc_allocator_split() -> None:
     require("void *ipc_alloc(size_t size)" in alloc and
             "void *ipc_rcu_alloc(size_t size)" in alloc,
             "allocator implementations must live in ipc/alloc.c")
+    require('#include "alloc.h"' in alloc,
+            "ipc/alloc.c must include its focused interface header")
+    forbid(alloc, '#include "util.h"',
+           "ipc/alloc.c must not depend on the full IPC util.h graph")
+    require("#include <linux/types.h>" in alloc_h,
+            "ipc/alloc.h must define size_t through a direct Linux type dependency")
+    for prototype in (
+        "void *ipc_alloc(size_t size);",
+        "void ipc_free(void *ptr, size_t size);",
+        "void *ipc_rcu_alloc(size_t size);",
+        "void ipc_rcu_getref(void *ptr);",
+        "void ipc_rcu_putref(void *ptr);",
+    ):
+        require(prototype in alloc_h,
+                f"missing allocator interface prototype: {prototype}")
+    require('#include "alloc.h"' in util_h,
+            "ipc/util.h must re-export the focused allocator interface")
+    require("#include <linux/ipc.h>" in util_h,
+            "ipc/util.h must directly provide IPCMNI/kern_ipc_perm dependencies")
+    require("ipc_alloc(size_t size)" not in util_h,
+            "allocator prototypes must not be duplicated in ipc/util.h")
     require("ipc_rcu_init_header" in alloc and "ipc_rcu_header_size" in alloc,
             "RCU allocation policy must be factored into named helpers")
     require("l30_size_add_overflow(header_size, size, &allocation_size)" in alloc,
             "RCU header + object size must use checked addition")
-    require("ipc_alloc(size_t size)" in util_h and
-            "ipc_free(void *ptr, size_t size)" in util_h,
-            "IPC allocation interface must use size_t")
 
 
 def check_block_sysfs() -> None:
@@ -156,14 +175,18 @@ def check_ci_scope() -> None:
         "block/scsi_ioctl.o",
         "ipc/alloc.o",
         "ipc/mqueue.o",
+        "ipc/msg.o",
         "ipc/msgutil.o",
         "ipc/sem.o",
+        "ipc/shm.o",
         "ipc/util.o",
     )
     for obj in required_objects:
         require(obj in build, f"GCC 4.8 proof build does not compile {obj}")
     require("cp ipc/alloc.c linux-3.0/ipc/alloc.c" in workflow,
             "CI overlay must include new ipc/alloc.c")
+    require("cp ipc/alloc.h linux-3.0/ipc/alloc.h" in workflow,
+            "CI overlay must include focused ipc/alloc.h")
     require("cp ipc/Makefile linux-3.0/ipc/Makefile" in workflow,
             "CI overlay must include the refactored IPC Makefile")
     require("gcc:4.8.5" in workflow,

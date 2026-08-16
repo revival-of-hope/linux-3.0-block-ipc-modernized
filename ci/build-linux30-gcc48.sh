@@ -42,6 +42,8 @@ make -j2 V=1 \
   block/scsi_ioctl.o \
   ipc/alloc.o \
   ipc/mqueue.o \
+  ipc/msg.o \
   ipc/msgutil.o \
   ipc/sem.o \
+  ipc/shm.o \
   ipc/util.o 2>&1 | tee /work/changed-objects-build.log

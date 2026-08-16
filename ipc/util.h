@@ -12,6 +12,9 @@
 
 #include <linux/unistd.h>
 #include <linux/err.h>
+#include <linux/ipc.h>
+
+#include "alloc.h"
 
 #define SEQ_MULTIPLIER	(IPCMNI)
 
@@ -104,22 +107,6 @@ void ipc_rmid(struct ipc_ids *, struct kern_ipc_perm *);
 
 /* must be called with ipcp locked */
 int ipcperms(struct ipc_namespace *ns, struct kern_ipc_perm *ipcp, short flg);
-
-/* for rare, potentially huge allocations.
- * both function can sleep
- */
-void *ipc_alloc(size_t size);
-void ipc_free(void *ptr, size_t size);
-
-/*
- * For allocation that need to be freed by RCU.
- * Objects are reference counted, they start with reference count 1.
- * getref increases the refcount, the putref call that reduces the recount
- * to 0 schedules the rcu destruction. Caller must guarantee locking.
- */
-void *ipc_rcu_alloc(size_t size);
-void ipc_rcu_getref(void *ptr);
-void ipc_rcu_putref(void *ptr);
 
 struct kern_ipc_perm *ipc_lock(struct ipc_ids *, int);
 
