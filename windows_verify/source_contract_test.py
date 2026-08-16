@@ -166,6 +166,16 @@ def check_ci_scope() -> None:
             "CI overlay must include new ipc/alloc.c")
     require("cp ipc/Makefile linux-3.0/ipc/Makefile" in workflow,
             "CI overlay must include the refactored IPC Makefile")
+    require("gcc:4.8.5" in workflow,
+            "CI must use the Docker Official GCC 4.8.5 image")
+    forbid(workflow, "ubuntu:14.04",
+           "CI must not depend on the obsolete Ubuntu 14.04 runtime image")
+    forbid(build, "old-releases.ubuntu.com",
+           "proof build must not depend on retired Ubuntu apt archives")
+    forbid(build, "apt-get",
+           "proof build must not install packages at runtime")
+    require('case "$gcc_version" in' in build and "4.8*)" in build,
+            "proof build must reject a non-GCC-4.8 toolchain")
 
 
 def main() -> int:

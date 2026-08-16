@@ -24,7 +24,7 @@ jobs:
         run: .\windows_verify\verify-native.ps1
 
   kernel-objects:
-    name: Build all refactored Linux 3.0 objects with GCC 4.8
+    name: Build all refactored Linux 3.0 objects with GCC 4.8.5
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,14 +56,15 @@ jobs:
           cp include/linux/l30_checked_math.h \
              linux-3.0/include/linux/l30_checked_math.h
 
-      - name: Build refactored objects in Ubuntu 14.04 / GCC 4.8
+      - name: Build refactored objects in Docker Official gcc:4.8.5
         shell: bash
         run: |
           set -euxo pipefail
+          docker pull gcc:4.8.5
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
-            ubuntu:14.04 \
+            gcc:4.8.5 \
             bash /work/ci/build-linux30-gcc48.sh
 
       - name: Re-run source contracts on Linux runner
