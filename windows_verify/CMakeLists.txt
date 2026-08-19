@@ -9,7 +9,7 @@ enable_testing()
 
 function(add_policy_test target source)
   add_executable(${target} ${source})
-  target_include_directories(${target} PRIVATE ../include)
+  target_include_directories(${target} PRIVATE ../include ../block)
   if(MSVC)
     target_compile_options(${target} PRIVATE /W4 /WX)
   else()
@@ -20,3 +20,4 @@ endfunction()
 
 add_policy_test(checked_math_test checked_math_test.c)
 add_policy_test(allocation_policy_test allocation_policy_test.c)
+add_policy_test(look_policy_test look_policy_test.c)

@@ -2,6 +2,16 @@ name: Linux 3.0 refactor verification
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "block/**"
+      - "ipc/**"
+      - "include/linux/l30_checked_math.h"
+      - "windows_verify/**"
+      - "ci/**"
+      - ".github/workflows/linux30-object-build.yml"
   push:
     branches:
       - main
@@ -24,7 +34,7 @@ jobs:
         run: .\windows_verify\verify-native.ps1
 
   kernel-objects:
-    name: Build all refactored Linux 3.0 objects with GCC 4.8.5
+    name: Build objects and link Linux 3.0 with GCC 4.8.5
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +56,11 @@ jobs:
           cp block/blk-sysfs.c linux-3.0/block/blk-sysfs.c
           cp block/genhd.c linux-3.0/block/genhd.c
           cp block/scsi_ioctl.c linux-3.0/block/scsi_ioctl.c
+          cp block/look-iosched.c linux-3.0/block/look-iosched.c
+          cp block/look-iosched-policy.h \
+             linux-3.0/block/look-iosched-policy.h
+          cp block/Kconfig.iosched linux-3.0/block/Kconfig.iosched
+          cp block/Makefile linux-3.0/block/Makefile
           cp ipc/Makefile linux-3.0/ipc/Makefile
           cp ipc/alloc.c linux-3.0/ipc/alloc.c
           cp ipc/alloc.h linux-3.0/ipc/alloc.h
@@ -82,6 +97,8 @@ jobs:
             block/blk-sysfs.o \
             block/genhd.o \
             block/scsi_ioctl.o \
+            block/look-iosched.o \
+            block/built-in.o \
             ipc/alloc.o \
             ipc/mqueue.o \
             ipc/msg.o \
@@ -92,9 +109,13 @@ jobs:
             test -s "linux-3.0/$object"
             cp "linux-3.0/$object" proof/
           done
-          cp changed-objects-build.log proof/
+          test -s linux-3.0/vmlinux
+          cp changed-objects-build.log vmlinux-build.log proof/
+          cp linux-3.0/.config proof/kernel-config
           sha256sum proof/*.o > proof/SHA256SUMS.txt
+          sha256sum linux-3.0/vmlinux > proof/VMLINUX_SHA256SUM.txt
           cat proof/SHA256SUMS.txt
+          cat proof/VMLINUX_SHA256SUM.txt
 
       - name: Upload compiled proof
         uses: actions/upload-artifact@v4
