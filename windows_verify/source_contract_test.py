@@ -129,6 +129,68 @@ def check_block_allocations() -> None:
            "unchecked SCSI iovec allocation formula remains")
 
 
+def check_look_scheduler() -> None:
+    scheduler = read("block/look-iosched.c")
+    policy = read("block/look-iosched-policy.h")
+    kconfig = read("block/Kconfig.iosched")
+    makefile = read("block/Makefile")
+    cmake = read("windows_verify/CMakeLists.txt")
+    policy_test = read("windows_verify/look_policy_test.c")
+
+    require("config IOSCHED_LOOK" in kconfig,
+            "LOOK scheduler is missing its Kconfig switch")
+    require("config DEFAULT_LOOK" in kconfig and
+            'default "look" if DEFAULT_LOOK' in kconfig,
+            "LOOK scheduler cannot be selected as a configured default")
+    require_regex(kconfig, r'choice.*?default DEFAULT_CFQ',
+                  "CFQ must remain the default scheduler choice")
+    require("obj-$(CONFIG_IOSCHED_LOOK)\t+= look-iosched.o" in makefile,
+            "LOOK scheduler is not wired into the block Makefile")
+
+    require('#include "look-iosched-policy.h"' in scheduler,
+            "kernel scheduler must execute the shared policy helper")
+    require("struct rb_root sort_list" in scheduler and
+            "struct list_head fifo_list" in scheduler,
+            "LOOK scheduler must maintain sector and arrival-order indexes")
+    require("time_after_eq(jiffies, rq_fifo_time(rq))" in scheduler,
+            "LOOK scheduler must detect expired FIFO requests safely")
+    require("l30_look_choose(" in scheduler,
+            "LOOK dispatch must use the shared policy decision")
+    require("look_direction_to_request(ld, expired)" in scheduler,
+            "expired requests must update the sweep direction")
+    require("rq_set_fifo_time(rq, jiffies + ld->fifo_expire)" in scheduler,
+            "queued requests must receive an absolute FIFO deadline")
+    for callback in (
+        ".elevator_merge_fn = look_merge",
+        ".elevator_merged_fn = look_merged_request",
+        ".elevator_merge_req_fn = look_merged_requests",
+        ".elevator_dispatch_fn = look_dispatch_requests",
+        ".elevator_add_req_fn = look_add_request",
+        ".elevator_former_req_fn = elv_rb_former_request",
+        ".elevator_latter_req_fn = elv_rb_latter_request",
+        ".elevator_init_fn = look_init_queue",
+        ".elevator_exit_fn = look_exit_queue",
+    ):
+        require(callback in scheduler, f"missing LOOK elevator callback: {callback}")
+    require('.elevator_name = "look"' in scheduler,
+            "LOOK elevator must register under the expected name")
+    require("LOOK_ATTR(max_wait_ms)" in scheduler and
+            "LOOK_ATTR(front_merges)" in scheduler,
+            "LOOK sysfs tunables are incomplete")
+    require(scheduler.count("kstrtoul(page, 10, &value)") == 2,
+            "LOOK tunables must use strict numeric parsing")
+    forbid(scheduler, "simple_strtol", "LOOK must not use permissive parsing")
+
+    require("enum l30_look_direction" in policy and
+            "enum l30_look_choice" in policy and
+            "l30_look_choose(" in policy,
+            "shared LOOK policy interface is incomplete")
+    require("add_policy_test(look_policy_test look_policy_test.c)" in cmake,
+            "portable LOOK policy test is not registered")
+    require(policy_test.count("require_choice(") >= 10,
+            "LOOK policy test does not cover the full decision matrix")
+
+
 def check_ipc_allocations() -> None:
     mqueue = read("ipc/mqueue.c")
     require("static int mq_calculate_sizes" in mqueue,
@@ -173,6 +235,8 @@ def check_ci_scope() -> None:
         "block/blk-sysfs.o",
         "block/genhd.o",
         "block/scsi_ioctl.o",
+        "block/look-iosched.o",
+        "block/built-in.o",
         "ipc/alloc.o",
         "ipc/mqueue.o",
         "ipc/msg.o",
@@ -189,6 +253,21 @@ def check_ci_scope() -> None:
             "CI overlay must include focused ipc/alloc.h")
     require("cp ipc/Makefile linux-3.0/ipc/Makefile" in workflow,
             "CI overlay must include the refactored IPC Makefile")
+    require("cp block/look-iosched.c linux-3.0/block/look-iosched.c" in workflow,
+            "CI overlay must include the LOOK scheduler")
+    require("cp block/look-iosched-policy.h" in workflow,
+            "CI overlay must include the shared LOOK policy")
+    require("cp block/Kconfig.iosched linux-3.0/block/Kconfig.iosched" in workflow,
+            "CI overlay must include the LOOK Kconfig integration")
+    require("cp block/Makefile linux-3.0/block/Makefile" in workflow,
+            "CI overlay must include the LOOK Makefile integration")
+    require("pull_request:" in workflow,
+            "CI must validate pull requests")
+    require("make -j2 V=1 vmlinux" in build,
+            "GCC 4.8 proof must link a complete vmlinux")
+    require("CONFIG_IOSCHED_LOOK=y" in build and
+            "CONFIG_DEFAULT_CFQ=y" in build,
+            "GCC 4.8 proof must assert LOOK integration without changing the default")
     require("gcc:4.8.5" in workflow,
             "CI must use the Docker Official GCC 4.8.5 image")
     forbid(workflow, "ubuntu:14.04",
@@ -207,6 +286,7 @@ def main() -> int:
         check_ipc_allocator_split,
         check_block_sysfs,
         check_block_allocations,
+        check_look_scheduler,
         check_ipc_allocations,
         check_ci_scope,
     )

@@ -32,6 +32,12 @@ esac
 cd /work/linux-3.0
 make mrproper
 make defconfig
+./scripts/config --enable IOSCHED_LOOK
+./scripts/config --disable DEFAULT_LOOK
+./scripts/config --enable DEFAULT_CFQ
+make oldconfig </dev/null
+grep -q '^CONFIG_IOSCHED_LOOK=y$' .config
+grep -q '^CONFIG_DEFAULT_CFQ=y$' .config
 make -j2 prepare scripts
 
 set -o pipefail
@@ -40,6 +46,8 @@ make -j2 V=1 \
   block/blk-sysfs.o \
   block/genhd.o \
   block/scsi_ioctl.o \
+  block/look-iosched.o \
+  block/built-in.o \
   ipc/alloc.o \
   ipc/mqueue.o \
   ipc/msg.o \
@@ -47,3 +55,5 @@ make -j2 V=1 \
   ipc/sem.o \
   ipc/shm.o \
   ipc/util.o 2>&1 | tee /work/changed-objects-build.log
+
+make -j2 V=1 vmlinux 2>&1 | tee /work/vmlinux-build.log
